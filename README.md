@@ -84,6 +84,8 @@ powershell -File scripts/np-env.ps1
 | 外置代理 URL | 外置模式下目标地址，如 `http://127.0.0.1:8080`、`http://user:pass@host:port`。 |
 | 监听端口 / 基本认证 / 引擎访问日志 / NO_PROXY | 内置引擎参数；NO_PROXY 为服务端豁免名单（默认含回环）。 |
 | CA 文件 | MITM 代理（Burp）导出的根证书 PEM 路径，见下方“接 Burp”。 |
+| SSE 明文流 (plainStream) | 默认开：经代理的请求强制 `Accept-Encoding: identity`，避免 MITM 代理把 SSE 再编码成 gzip 导致“首事件被缓冲、DSH 误判卡住而重试”，也便于抓取明文。 |
+| 独立隧道 (freshTunnel) | 默认开：每请求新建代理连接（短 keep-alive 自动回收），规避代理侧关闭隧道的复用竞态。 |
 | 热切换 | 默认开启；关闭则退化为“仅 L0 环境、改配置需重启”。 |
 
 也可直接写 `~/.dsh/settings.yaml`：
@@ -95,6 +97,8 @@ netProxy:
   enginePort: 4317
   # proxyUrl: http://127.0.0.1:8080   # external 时必填
   # caFile: C:\burp\ca.pem            # MITM 代理时填
+  plainStream: true    # SSE 明文流（防 gzip 缓冲导致重试）
+  freshTunnel: true    # 每请求独立代理隧道
 ```
 
 ### 3) 验证
@@ -109,6 +113,18 @@ netProxy:
 2. 导出 Burp 根证书为 PEM：`Proxy → Options → Import/Export CA certificate` → `Copy`（PEM 文本，存成 `.pem`）；或导出 DER 后转：`openssl x509 -inform DER -in burp.cer -out burp.pem`。
 3. CA 文件=该 `.pem` 路径（并对子进程/工作线程用 `scripts/np-env.ps1 -CaCert ...` 启动，或设 `NODE_EXTRA_CA_CERTS`）。
 4. 完成后 HTTPS 请求能经 Burp 完成，Burp `HTTP history` 可见正文；否则面板会报 `TLS_CA` 并提示填 CA。
+
+### 5) LLM 流式（SSE）经 Burp 时而“收到却重试”？—— 本插件已内置对策
+
+**根因**：LLM 是 SSE 长连接。若客户端带 `Accept-Encoding: gzip`，MITM 代理（Burp）会把响应流再编码成 gzip；undici 的解压器为大窗口/整段缓冲，**首个 SSE 事件被推迟数秒**，DSH 的流式看门狗判定“卡住”→ 自动重试，形成“Burp 收到了、DSH 却重试”。
+
+**内置对策（默认开启，无需你操作）**：
+- `plainStream`（SSE 明文流）：经远端代理的请求强制 `Accept-Encoding: identity` → 上游/代理不再 gzip → SSE 即时逐事件下发（实测首事件 465ms vs 5.4s，重试消失）。
+- `freshTunnel`（独立隧道）：每条请求新建代理连接，规避代理侧关闭/闲置隧道的复用竞态。
+
+**如仍异常，请在 Burp 侧配合**：
+- `Proxy → Options` 关闭对这些流量的响应缓冲/重写；或对该 LLM 主机 `TLS pass through`（直通，仅记连接）；或关闭对 SSE 的 gzip 再编码。
+- 说明：若代理是“整段缓冲后才转发”（不属压缩），客户端无法解决，属代理配置问题（见探针 D 模式）。
 
 ## 报错与排查（报错机制）
 
@@ -132,6 +148,7 @@ npm run check                              # 语法检查
 node test/test-host.mjs                    # 宿主逻辑（settings 晚绑定/引擎启停//set）
 node test/hot-probe.mjs                    # 热切换 + 回环豁免（需网络）
 node test/ca-probe.mjs                     # caFile/错误分类（需 openssl，自签 CA 隧道）
+node test/sse-probe.mjs                    # SSE 经代理流式（gzip 重编码复现+plainStream 修复证明，需 openssl）
 ```
 
 ## 边界

@@ -15,6 +15,8 @@ export interface NetProxyConfig {
   logFile: string;
   noProxy: string;
   caFile: string;
+  plainStream: boolean;
+  freshTunnel: boolean;
   observe: boolean;
   restartOnCrash: boolean;
   watchMs: number;
