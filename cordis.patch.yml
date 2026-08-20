@@ -1,0 +1,20 @@
+# dsh-netproxy bundle patch: mounts the network-proxy control plugin into a
+# dsh profile host composition.
+#
+# Install:
+#   dsh plugin --profile web add <package-or-path>   # e.g. dsh-netproxy from GitHub, or a local dir
+# (the `dsh plugin` command pnpm-installs the package into the profile and
+# reconciles it into the profile's `dsh.profile.bundles` layer list).
+#
+# The row below is the composition BASE. The user settings section (`netProxy`
+# in ~/.dsh/settings.yaml, or the Settings -> 网络代理 page) overrides it.
+#
+# Defaults:
+#   enabled: false  -- flip to true (GUI page or settings.yaml) to start the
+#                      built-in engine and observers. The L0 interception env
+#                      must also be present at DSH launch (scripts/np-env.ps1).
+- insert:
+    - id: netproxy
+      name: 'dsh-netproxy'
+      config:
+        enabled: false

@@ -1,0 +1,12 @@
+# dependencies
+node_modules/
+
+# logs / runtime artifacts
+*.log
+.np-engine-*.log
+.engine.out
+test/.tmp-certs/
+
+# local env overrides
+*.local
+.env
