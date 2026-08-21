@@ -1,7 +1,7 @@
 {
   "name": "dsh-netproxy",
-  "version": "0.1.0",
-  "description": "DSH (DeepSeek Harness) network proxy plugin: a built-in forward proxy engine (HTTP + CONNECT) plus a Settings-page control plane that routes ALL DSH outbound traffic (LLM inference, web tools, other plugins, curl/git subprocesses) through a configurable proxy with hot switching, per-request error reporting, and optional MITM-proxy CA trust.",
+  "version": "0.2.0",
+  "description": "DSH (DeepSeek Harness) network proxy plugin with a Postman-style control plane: proxy source 直连/系统代理/自定义代理, custom protocol http|https|socks4|socks5 (zero-dependency SOCKS handshake in a unified local egress engine), system-chain certificate following with optional MITM CA and an ignore-certificate switch, hot switching, per-request error attribution.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "engine": "node lib/engine.js",
-    "check": "node --check lib/engine.js && node --check lib/index.js && node --check lib/client.js"
+    "check": "node --check lib/engine.js && node --check lib/index.js && node --check lib/client.js && node --check lib/sysproxy.js"
   },
   "dsh": {
     "bundle": {

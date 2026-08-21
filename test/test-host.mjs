@@ -7,9 +7,11 @@
  *      can mount before the settings service) — attaches via
  *      'internal/service'('settings'), then /set must work.
  *
- * Uses a mock ctx, real schemastery (junctioned into node_modules), and a real
- * spawned engine subprocess. Asserts registration, route registration, engine
- * liftoff + JSON "listen" log, /state, /log, /set round-trip, and teardown.
+ * Postman-style model: `source` (direct|system|custom) drives a local engine
+ * whose egress is the resolved custom/system URL. Uses a mock ctx, real
+ * schemastery (junctioned into node_modules), and a real spawned engine. Asserts
+ * registration, route registration, engine liftoff, /state, /detect, /log, /set
+ * round-trip, and teardown.
  */
 import { apply, Config, name } from '../lib/index.js';
 import { readFile } from 'node:fs/promises';
@@ -20,7 +22,7 @@ const failures = [];
 const ok = (cond, msg) => { if (cond) console.log('  ok -', msg); else { failures.push(msg); console.log('  FAIL -', msg); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const DEFAULTS = { enabled: false, mode: 'builtin', proxyUrl: '', enginePort: 4317, engineBind: '127.0.0.1', auth: '', logFile: '', noProxy: '', observe: true, restartOnCrash: true, watchMs: 0 };
+const DEFAULTS = { source: 'direct', customProtocol: 'http', customHost: '', customPort: 0, customAuth: '', enginePort: 4317, engineBind: '127.0.0.1', logFile: '', noProxy: '', caFile: '', skipVerify: false, observe: true, restartOnCrash: true, watchMs: 0, hot: false };
 
 function makeCtx({ lateSettings = false, base = {} } = {}) {
   const registrations = { settings: null, routes: [], effects: [], on: [], watchers: [] };
@@ -62,7 +64,7 @@ const byPath = (regs, p) => regs.routes.find((r) => r.path === p);
 async function runScenario(label, { lateSettings }) {
   console.log(`\n== ${label} ==`);
   const port = lateSettings ? 4398 : 4399;
-  const appCfg = { enabled: true, enginePort: port, logFile: join(tmpdir(), `np-smoke-${Date.now()}.log`), hot: false };
+  const appCfg = { source: 'custom', customProtocol: 'http', customHost: '127.0.0.1', customPort: 39999, enginePort: port, logFile: join(tmpdir(), `np-smoke-${Date.now()}.log`), hot: false };
   const { ctx, emitService, settingsSection } = makeCtx({ lateSettings, base: appCfg });
   apply(ctx, appCfg);
   const regs = ctx.registrations;
@@ -71,9 +73,9 @@ async function runScenario(label, { lateSettings }) {
     ok(regs.settings !== null, 'settings registered upfront');
   } else {
     ok(regs.settings === null, 'settings NOT registered before service binds (expected late)');
-    ok(regs.routes.filter((r) => r.path.includes('dsh-netproxy')).length === 3, 'routes registered even without settings');
+    ok(regs.routes.filter((r) => r.path.includes('dsh-netproxy')).length === 4, 'routes registered even without settings');
     const preRes = fakeRes();
-    await byPath(regs, '/plugins/dsh-netproxy/set').handler(fakeReq('/x', { enabled: true }), preRes);
+    await byPath(regs, '/plugins/dsh-netproxy/set').handler(fakeReq('/x', { source: 'custom' }), preRes);
     ok(preRes.status === 400, '/set before settings → 400');
     emitService('settings');
     await sleep(20);
@@ -86,7 +88,13 @@ async function runScenario(label, { lateSettings }) {
   ok(stateRes.status === 200, 'state 200');
   const s1 = JSON.parse(stateRes.body);
   ok(s1.name === name, 'state.name');
+  ok(s1.source === 'custom', `state.source=custom (got ${s1.source})`);
+  ok(s1.egress === 'http://127.0.0.1:39999', `state.egress resolved (got ${s1.egress})`);
   ok(s1.engine.running === true, `engine.running (pid=${s1.engine.pid})`);
+  ok(s1.engine.upstream === 'http://127.0.0.1:39999', `engine.upstream=${s1.engine.upstream}`);
+  const detectRes = fakeRes();
+  await byPath(regs, '/plugins/dsh-netproxy/detect').handler(fakeReq('/x'), detectRes);
+  ok(detectRes.status === 200, '/detect 200');
   const logRes = fakeRes();
   await byPath(regs, '/plugins/dsh-netproxy/log').handler(fakeReq('/plugins/dsh-netproxy/log?n=5'), logRes);
   const logResJson = JSON.parse(logRes.body);
@@ -95,11 +103,11 @@ async function runScenario(label, { lateSettings }) {
   const setRes = fakeRes();
   const sink = { handlers: {}, url: '/plugins/dsh-netproxy/set', on(e, cb) { this.handlers[e] = cb; }, destroy() {} };
   const setPromise = byPath(regs, '/plugins/dsh-netproxy/set').handler(sink, setRes);
-  sink.handlers.data?.(JSON.stringify({ enabled: false }));
+  sink.handlers.data?.(JSON.stringify({ source: 'direct' }));
   sink.handlers.end?.();
   await setPromise;
-  ok(setRes.status === 200 && JSON.parse(setRes.body).enabled === false, '/set {enabled:false} → 200, enabled false');
-  ok(settingsSection.enabled === false, 'settings section updated (persisted)');
+  ok(setRes.status === 200 && JSON.parse(setRes.body).source === 'direct', '/set {source:direct} → 200, source direct');
+  ok(settingsSection.source === 'direct', 'settings section updated (persisted)');
 
   for (const e of regs.effects) { try { e.disposer(); } catch {} }
   await sleep(400);

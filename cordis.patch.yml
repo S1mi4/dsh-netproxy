@@ -9,12 +9,15 @@
 # The row below is the composition BASE. The user settings section (`netProxy`
 # in ~/.dsh/settings.yaml, or the Settings -> 网络代理 page) overrides it.
 #
-# Defaults:
-#   enabled: false  -- flip to true (GUI page or settings.yaml) to start the
-#                      built-in engine and observers. The L0 interception env
-#                      must also be present at DSH launch (scripts/np-env.ps1).
+# Postman-style model:
+#   source: direct | system | custom
+#     direct  = no proxying at all
+#     system  = follow the OS system proxy (env + Windows registry)
+#     custom  = explicit proxy with protocol http|https|socks4|socks5
+#   Certificates follow the SYSTEM chain by default; caFile (MITM) and
+#   skipVerify (Postman-style "ignore cert verification") are optional extras.
 - insert:
     - id: netproxy
       name: 'dsh-netproxy'
       config:
-        enabled: false
+        source: direct

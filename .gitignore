@@ -5,7 +5,7 @@ node_modules/
 *.log
 .np-engine-*.log
 .engine.out
-test/.tmp-certs/
+test/.tmp-*/
 test/.sse-tmp/
 
 # local env overrides
