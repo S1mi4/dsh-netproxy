@@ -64,7 +64,8 @@ const byPath = (regs, p) => regs.routes.find((r) => r.path === p);
 async function runScenario(label, { lateSettings }) {
   console.log(`\n== ${label} ==`);
   const port = lateSettings ? 4398 : 4399;
-  const appCfg = { source: 'custom', customProtocol: 'http', customHost: '127.0.0.1', customPort: 39999, enginePort: port, logFile: join(tmpdir(), `np-smoke-${Date.now()}.log`), hot: false };
+  // SOCKS5 custom egress ⇒ the local engine bridge must run (undici can't sock).
+  const appCfg = { source: 'custom', customProtocol: 'socks5', customHost: '127.0.0.1', customPort: 39998, enginePort: port, logFile: join(tmpdir(), `np-smoke-${Date.now()}.log`), hot: false };
   const { ctx, emitService, settingsSection } = makeCtx({ lateSettings, base: appCfg });
   apply(ctx, appCfg);
   const regs = ctx.registrations;
@@ -89,9 +90,10 @@ async function runScenario(label, { lateSettings }) {
   const s1 = JSON.parse(stateRes.body);
   ok(s1.name === name, 'state.name');
   ok(s1.source === 'custom', `state.source=custom (got ${s1.source})`);
-  ok(s1.egress === 'http://127.0.0.1:39999', `state.egress resolved (got ${s1.egress})`);
+  ok(s1.routeKind === 'engine', `socks5 custom ⇒ routeKind=engine (got ${s1.routeKind})`);
+  ok(s1.egress === 'socks5://127.0.0.1:39998', `state.egress resolved (got ${s1.egress})`);
   ok(s1.engine.running === true, `engine.running (pid=${s1.engine.pid})`);
-  ok(s1.engine.upstream === 'http://127.0.0.1:39999', `engine.upstream=${s1.engine.upstream}`);
+  ok(s1.engine.upstream === 'socks5://127.0.0.1:39998', `engine.upstream=${s1.engine.upstream}`);
   const detectRes = fakeRes();
   await byPath(regs, '/plugins/dsh-netproxy/detect').handler(fakeReq('/x'), detectRes);
   ok(detectRes.status === 200, '/detect 200');
@@ -100,14 +102,29 @@ async function runScenario(label, { lateSettings }) {
   const logResJson = JSON.parse(logRes.body);
   ok(Array.isArray(logResJson.lines) && logResJson.lines.length >= 1, `log route returns ${logResJson.lines.length} line(s)`);
 
+  // Switch to an HTTP custom egress ⇒ undici talks straight upstream; the local
+  // engine must be torn down (no longer needed).
   const setRes = fakeRes();
   const sink = { handlers: {}, url: '/plugins/dsh-netproxy/set', on(e, cb) { this.handlers[e] = cb; }, destroy() {} };
   const setPromise = byPath(regs, '/plugins/dsh-netproxy/set').handler(sink, setRes);
-  sink.handlers.data?.(JSON.stringify({ source: 'direct' }));
+  sink.handlers.data?.(JSON.stringify({ source: 'custom', customProtocol: 'http', customHost: '127.0.0.1', customPort: 39999 }));
   sink.handlers.end?.();
   await setPromise;
-  ok(setRes.status === 200 && JSON.parse(setRes.body).source === 'direct', '/set {source:direct} → 200, source direct');
-  ok(settingsSection.source === 'direct', 'settings section updated (persisted)');
+  ok(setRes.status === 200, '/set {custom http} → 200');
+  const s2 = JSON.parse(setRes.body);
+  ok(s2.routeKind === 'upstream', `http custom ⇒ routeKind=upstream (got ${s2.routeKind})`);
+  ok(s2.egress === 'http://127.0.0.1:39999', `http egress resolved (got ${s2.egress})`);
+  ok(s2.engine.running === false, 'http egress: local engine stopped');
+  ok(settingsSection.source === 'custom' && settingsSection.customProtocol === 'http', 'settings section updated (persisted)');
+
+  // Direct ⇒ clear everything.
+  const setRes2 = fakeRes();
+  const sink2 = { handlers: {}, url: '/plugins/dsh-netproxy/set', on(e, cb) { this.handlers[e] = cb; }, destroy() {} };
+  const setPromise2 = byPath(regs, '/plugins/dsh-netproxy/set').handler(sink2, setRes2);
+  sink2.handlers.data?.(JSON.stringify({ source: 'direct' }));
+  sink2.handlers.end?.();
+  await setPromise2;
+  ok(setRes2.status === 200 && JSON.parse(setRes2.body).source === 'direct', '/set {source:direct} → 200, source direct');
 
   for (const e of regs.effects) { try { e.disposer(); } catch {} }
   await sleep(400);

@@ -10,25 +10,27 @@ DSH 的 LLM 请求由宿主进程的全局 `fetch` 发出（pi-ai/deepseek 适�
   - **直连** —— 不代理任何流量，环境变量清空；
   - **系统代理** —— 自动跟随系统代理（环境变量 `HTTP(S)_PROXY`/`ALL_PROXY` + Windows 注册表 `Internet Settings`），带缓存与“重新探测”；
   - **自定义代理** —— 填主机/端口（可带认证），**协议可选 http / https / socks4 / socks5**。
-- **统一本地出口引擎**（`lib/engine.js`，零依赖子进程）：无论选哪种来源/协议，fetch 与子进程都只看到**一个**本地引擎（`http://127.0.0.1:<port>`），由引擎去建立真实连接 —— 包括 **undici 本身不支持的 SOCKS4/5**（引擎内零依赖自写握手：no-auth / user:pass、IPv4/IPv6/域名、socks4a）。
+- **能直连就直连，本地引擎只在必须时启用**：
+  - **HTTP / HTTPS 代理（含系统代理、自定义 http/https）**：undici 与子进程**直接**连上游代理，**不经过本地引擎**（少一跳，报错也更直观）；
+  - **SOCKS4/5**（undici 本身不会说 socks 协议）：才启用本地引擎（`lib/engine.js`，零依赖）做桥 —— fetch/子进程连 `http://127.0.0.1:<port>`，由引擎完成 socks 握手（no-auth / user:pass、IPv4/IPv6/域名、socks4a）。
 - **证书不再卡使用，天然跟随系统证书链**：默认就用 Node 信任的系统根证书做校验，无需任何配置；
   - `caFile`（可选）：额外信任一个 PEM CA —— 只有接 Burp 等 **MITM 抓包代理**才需要；
   - `skipVerify`（可选）：Postman 的“SSL certificate verification”开关，一键忽略证书校验（自签内部服务/个别代理）。
 - **热切换**：宿主运行时用 undici `ProxyAgent` 包装 `globalThis.fetch`，**每次请求按当前配置选代理** —— 改来源/协议/主机/开关即时生效，无需重启；同时同步 `process.env` 覆盖新起的子进程。
-- **可观测**：`llm/stream` 挂钩统计每次模型调用（provider/model/耗时）；引擎访问日志可回读。
+- **可观测**：`llm/stream` 挂钩统计每次模型调用（provider/model/耗时）；引擎访问日志可回读（仅 socks 场景运行）。
 - **报错归因**：代理连不上、目标 DNS、TLS/CA、超时、上游 5xx、SOCKS 协商失败、引擎反复崩溃……都会归类成用户可读原因并展示在设置页，不再无声重试。
 - 官方设置页「网络代理」：来源/协议/证书/NO_PROXY/状态/流量/错误，随主题亮暗切换。
 
 ```
 DSH 宿主进程 (host realm)
   LLM(pi-ai/deepseek) ─┐
-  其他插件 fetch ───────┼─→ 全局 fetch ──→ [热切换: undici ProxyAgent] ─┐
-  curl/git 子进程 ──────┘  (HTTP(S)_PROXY env) ────────────────────────┤
+  其他插件 fetch ───────┼─→ 全局 fetch ──→ [热切换: undici ProxyAgent]
+  curl/git 子进程 ──────┘  (HTTP(S)_PROXY env)                          │
   浏览器 GUI ──────────→ 127.0.0.1:3080（回环，NO_PROXY 豁免）            │
                                                                         ▼
-                                                  本地引擎 http://127.0.0.1:<enginePort>
-                                                   │ egress：直连 / 系统代理 / 自定义(http|https|socks4|socks5)
-                                                   ▼ 目标服务器
+           http/https / 系统代理        ── 直连上游（不经本地引擎）
+                                                                        ▼
+              socks4 / socks5           ── 本地引擎 http://127.0.0.1:<port>（socks 握手桥）
 ```
 
 ## 目录结构
@@ -36,8 +38,8 @@ DSH 宿主进程 (host realm)
 ```
 dsh-netproxy/
 ├─ lib/
-│  ├─ engine.js      # 统一本地出口引擎：HTTP+CONNECT 转发 + egress（http/https 上游 CONNECT / socks4/5 零依赖握手 + 访问日志 + NO_PROXY）
-│  ├─ index.js       # 宿主插件：settings、来源解析、系统代理探测缓存、引擎启停/熔断、热切换、报错归因、观测、web 路由
+│  ├─ engine.js      # 本地 SOCKS 桥引擎（仅 socks egress 才启用）：HTTP+CONNECT 转发 + socks4/5 零依赖握手 + http/https 上游转发 + 访问日志 + NO_PROXY
+│  ├─ index.js       # 宿主插件：settings、路由决策（直连/上游/引擎桥）、系统代理探测缓存、引擎启停/熔断、热切换、报错归因、观测、web 路由
 │  ├─ client.js      # 浏览器端设置页「网络代理」（Postman 风格）
 │  ├─ sysproxy.js    # 系统代理探测（环境变量 + Windows 注册表；零依赖）
 │  └─ types/         # 类型声明
@@ -105,8 +107,8 @@ netProxy:
 
 ### 2) 验证
 
-- 设置页 → 面板显示当前来源与出口，如「自定义代理 → socks5://127.0.0.1:1080」。
-- 引擎访问日志：`$env:USERPROFILE\.dsh\netproxy-engine.log`（或你设置的文件），能看到 `connect opencode.ai:443`（LLM）与各工具/curl 域名，`via=socks5/direct/http` 标记出口。
+- 设置页 → 面板显示当前来源与出口路由，如「自定义代理 → socks5://127.0.0.1:1080（经本地引擎桥接）」；若是 **http/https 或系统代理**则显示「直连上游 http://…」，**本地引擎不会启动**。
+- 引擎访问日志：`$env:USERPROFILE\.dsh\netproxy-engine.log`（仅 SOCKS 场景运行；http/https 直连时无此进程）。
 - 现在改来源/协议/主机/开关 → **立即生效，无需重启**（热切换）；开「忽略证书校验」或填 CA 后 → 同样即时生效。
 - 系统代理模式下若显示「未检测到系统代理」，点「重新探测」或确认系统代理（设置 → 网络 → 代理）已开启。
 
@@ -168,9 +170,10 @@ node test/socks-probe.mjs                  # 统一出口：socks5(无认证/带
 
 ## 边界
 
-- 回环（127.0.0.1/localhost/::1）默认不代理（`NO_PROXY` 含之），DSH 自身 3080、本地 MCP 不受影响；系统代理探测也会自动排除指向本插件自身的环路。
-- 引擎默认做 CONNECT 直通，不做 TLS 中间人；要抓 HTTPS 正文请用带 `caFile` 的外置 MITM 代理（或临时开「忽略证书校验」做纯转发）。
-- 系统代理通常为 HTTP 上游；若系统配置了 SOCKS，引擎也照常支持（探测解析 `socks=` 条目）。
+- 回环（127.0.0.1/localhost/::1）默认不代理（`NO_PROXY` 含之），DSH 自身 3080、本地 MCP 不受影响；系统代理探测也会自动排除指向本插件自身引擎的环路。
+- **本地引擎端口（4317）只有 SOCKS 场景才使用**：http/https（含系统代理）直连上游，引擎不会启动、也不会有 4317 报错。若在 socks 场景仍见 4317 报错 `fetch failed … tried through http://127.0.0.1:4317`，说明 socks 代理不可达/握手失败——查看设置页「代理错误」卡片的 `SOCKS`/`PROXY_*` 归类原因。
+- 引擎做 CONNECT 直通，不做 TLS 中间人；要抓 HTTPS 正文请用带 `caFile` 的外置 MITM 代理（或临时开「忽略证书校验」做纯转发）。
+- 系统代理通常为 HTTP 上游；若系统配置了 SOCKS（注册表 `socks=` 条目或 socks:// 环境变量），引擎会自动启用桥接。
 - 个别用自建 agent 的第三方库可能不读代理环境；DSH 主链路（LLM/工具）均走 fetch，不受影响。
 
 ## License

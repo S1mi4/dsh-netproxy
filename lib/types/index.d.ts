@@ -48,6 +48,8 @@ export interface NetProxyState {
   startedAt: number;
   now: number;
   source: 'direct' | 'system' | 'custom';
+  /** direct | upstream (undici speaks straight to the proxy) | engine (SOCKS bridge). */
+  routeKind: 'direct' | 'upstream' | 'engine';
   /** Resolved outbound target (e.g. socks5://127.0.0.1:1080 or system proxy). */
   egress: string;
   system: { url: string | null; source: 'env' | 'registry' | 'none' | 'loading'; from: string; checkedAt: number };
